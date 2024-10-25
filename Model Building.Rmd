@@ -1,0 +1,294 @@
+---
+title: "Bankruptcy Prediction Model Building"
+author: "Evan Gao"
+date: "`r Sys.Date()`"
+output:
+    html_document:
+      toc: true
+      toc_float: true
+      code_folding: hide
+---
+
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(dplyr)
+library(tidymodels)
+library(knitr)
+library(discrim)
+tidymodels_prefer()
+
+knitr::opts_chunk$set(echo = TRUE, tidy = TRUE, message = FALSE,
+                      warning = FALSE)
+opts_chunk$set(tidy.opts=list(width.cutoff=60),tidy=TRUE)
+options(digits = 3)
+
+set.seed(123)
+```
+
+This file will serve as the model building project for the bankruptcy prediction model. Our model will be classification determining whether a company would be bankrupt or not. As a reminder, we are building Logistic Regression, Elastic Net Regression, K-Nearest-Neighbor, Linear Discriminant Analysis, Quadratic Discriminant Analysis, and Random Forest models. 
+
+### Data Preparation
+
+We will first load the data from the saved file from our main project file. 
+```{r}
+load("data/Bankruptcy_setup.rda")
+```
+
+## Model Setup
+
+We will setup the models with their respective engines with the classification mode as we are looking for Y or N in our bankrupt variable. 
+```{r}
+# Logistic Regression
+log_reg <- logistic_reg() %>%
+  set_engine("glm") %>%
+  set_mode("classification")
+
+# Elastic Net Regression
+enet_reg <- logistic_reg(penalty = tune(), mixture = tune()) %>%
+  set_engine("glmnet") %>%
+  set_mode("classification")
+
+# K-Nearest-Neighbor
+knn_spec <- nearest_neighbor(neighbors = tune()) %>%
+  set_engine("kknn") %>%
+  set_mode("classification")
+
+# Linear Discriminant Analysis
+lda_spec <- discrim_linear() %>%
+  set_engine("MASS") %>%
+  set_mode("classification")
+
+# Quadratic Discriminant Analysis
+qda_spec <- discrim_quad() %>%
+  set_engine("MASS") %>%
+  set_mode("classification")
+
+# Random Forest
+rf_spec <- rand_forest(mtry = tune(), trees = tune(), min_n = tune()) %>%
+  set_engine("ranger", importance = "impurity") %>%
+  set_mode("classification")
+
+```
+
+Now that we have the models setup, we will create the workflow for each model.
+
+## Workflow
+```{r}
+# Logistic Regression
+log_reg_wf <- workflow() %>%
+  add_recipe(recipe_br) %>% 
+  add_model(log_reg)
+
+# Elastic Net Regression
+enet_reg_wf <- workflow() %>%
+  add_recipe(recipe_br) %>% 
+  add_model(enet_reg)
+
+# K-Nearest-Neighbor
+knn_wf <- workflow() %>%
+  add_recipe(recipe_br) %>% 
+  add_model(knn_spec)
+
+# Linear Discriminant Analysis
+lda_wf <- workflow() %>%
+  add_recipe(recipe_br) %>% 
+  add_model(lda_spec)
+
+# Quadratic Discriminant Analysis
+qda_wf <- workflow() %>%
+  add_recipe(recipe_br) %>% 
+  add_model(qda_spec)
+
+# Random Forest
+rf_wf <- workflow() %>%
+  add_recipe(recipe_br) %>% 
+  add_model(rf_spec)
+```
+
+Now we will proceed with the tuning grid.
+
+## Tuning Grid
+
+For the tuning grid we will assign our hyperparameters with suitable ranges
+```{r}
+knn_grid <- grid_regular(neighbors(range = c(1,10)), 
+                         levels = 10)
+
+rf_grid <- grid_regular(mtry(range = c(2, 12)), 
+                        trees(range = c(100,1000)), 
+                        min_n(range = c(5,20)), 
+                        levels = 5)
+
+enet_grid <- grid_regular(penalty(), mixture(), levels = 10)
+```
+
+## Model Tuning
+
+We will tune the models with the bankruptcy data and resample with our v-fold cross validation.
+```{r}
+# Logistic Regression
+log_reg_res <- tune_grid(
+  object = log_reg_wf, 
+  resamples = folds_br, 
+  grid = 1)
+
+# Elastic Net Regression
+enet_reg_res <- tune_grid(
+  object = enet_reg_wf, 
+  resamples = folds_br, 
+  grid = enet_grid)
+
+# K-Nearest-Neighbor
+knn_res <- tune_grid(
+  object = knn_wf, 
+  resamples = folds_br, 
+  grid = knn_grid)
+
+# Random Forest
+rf_res <- tune_grid(
+  object = rf_wf, 
+  resamples = folds_br, 
+  grid = rf_grid)
+
+# Linear Discriminant Analysis
+lda_res <- tune_grid(
+  object = lda_wf, 
+  resamples = folds_br)
+
+# Quadratic Discriminant Analysis
+qda_res <- tune_grid(
+  object = qda_wf, 
+  resamples = folds_br)
+
+
+```
+
+We should save our models for future use. We will showcase and analyze the results of our models on the Bankruptcy.Rmd file. 
+
+```{r}
+save(log_reg_res, enet_reg_res, knn_res, rf_res, lda_res, qda_res, file = "data/Model_tuning.rda")
+```
+
+
+
+## Model Selection
+
+For each model we will select for the model with the best performing ROC AUC. 
+```{r}
+# Logistic Regression only has one model
+best_log_reg <- select_best(log_reg_res, metric = "roc_auc")
+
+# Elastic Net Regression
+best_enet <- select_best(enet_reg_res, metric = "roc_auc")
+
+# K-Nearest-Neighbor
+best_knn <- select_best(knn_res, metric = "roc_auc")
+
+# Random Forest
+best_rf <- select_best(rf_res, metric = "roc_auc")
+
+# Linear Discriminant Analysis
+best_lda <- select_best(lda_res, metric = "roc_auc")
+
+# Quadratic Discriminant Analysis
+best_qda <- select_best(qda_res, metric = "roc_auc")
+```
+Now we have the best hyperparameter for each model, we will summarize the average ROC AUC and std error for each best performing model. 
+
+## Model Evaluation
+```{r}
+# Logistic Regression
+log_reg_res_metric <- log_reg_res %>% collect_metrics() %>% 
+  filter(.metric == "roc_auc") %>% 
+  select(mean, std_err)
+
+# Elastic Net Regression
+enet_reg_res_metric <-  enet_reg_res %>% collect_metrics() %>% 
+  filter(.metric == "roc_auc",
+         penalty == best_enet$penalty,
+         mixture == best_enet$mixture) %>% 
+  select(mean, std_err)
+
+# K-Nearest-Neighbor
+knn_res_metric <- knn_res %>% collect_metrics() %>% 
+  filter(.metric == "roc_auc",
+         neighbors == best_knn$neighbors) %>% 
+  select(mean, std_err)
+
+# Random Forest
+rf_res_metric <- rf_res %>% collect_metrics() %>% 
+  filter(.metric == "roc_auc",
+         mtry == best_rf$mtry,
+         trees == best_rf$trees,
+         min_n == best_rf$min_n) %>% 
+  select(mean, std_err)
+
+# Linear Discriminant Analysis
+lda_res_metric <- lda_res %>% collect_metrics() %>% 
+  filter(.metric == "roc_auc") %>% 
+  select(mean, std_err)
+
+# Quadratic Discriminant Analysis
+qda_res_metric <- qda_res %>% collect_metrics() %>% 
+  filter(.metric == "roc_auc") %>% 
+  select(mean, std_err)
+
+# Creates a tibble with the mean and std error of each model
+model_metrics <- tibble(
+  model = c("Logistic Regression", "Elastic Net Regression", "K-Nearest-Neighbor", "Random Forest", "Linear Discriminant Analysis", "Quadratic Discriminant Analysis"),
+  mean = c(log_reg_res_metric$mean, enet_reg_res_metric$mean, knn_res_metric$mean, rf_res_metric$mean, lda_res_metric$mean, qda_res_metric$mean),
+  std_err = c(log_reg_res_metric$std_err, enet_reg_res_metric$std_err, knn_res_metric$std_err, rf_res_metric$std_err, lda_res_metric$std_err, qda_res_metric$std_err)
+)
+
+model_metrics
+```
+As we can see from the table, the Random Forest model has the highest average ROC AUC and the lowest standard error, followed by the Elastic Net Regression model.
+
+## Finalize Workflow
+```{r}
+# Logistic Regression
+final_log_reg <- finalize_workflow(log_reg_wf, best_log_reg)
+
+# Elastic Net Regression
+final_enet_reg <- finalize_workflow(enet_reg_wf, best_enet)
+
+# K-Nearest-Neighbor
+final_knn <- finalize_workflow(knn_wf, best_knn)
+
+# Random Forest
+final_rf <- finalize_workflow(rf_wf, best_rf)
+
+# Linear Discriminant Analysis
+final_lda <- finalize_workflow(lda_wf, best_lda)
+
+# Quadratic Discriminant Analysis
+final_qda <- finalize_workflow(qda_wf, best_qda)
+
+```
+
+## Fit Final Models
+
+We will now fit our models to the training data and save the final models for future use.
+```{r}
+# Logistic Regression
+log_reg_fit <- fit(final_log_reg, data = train_br)
+
+# Elastic Net Regression
+enet_reg_fit <- fit(final_enet_reg, data = train_br)
+
+# K-Nearest-Neighbor
+knn_fit <- fit(final_knn, data = train_br)
+
+# Random Forest
+rf_fit <- fit(final_rf, data = train_br)
+
+# Linear Discriminant Analysis
+lda_fit <- fit(final_lda, data = train_br)
+
+# Quadratic Discriminant Analysis
+qda_fit <- fit(final_qda, data = train_br)
+
+# Save the final models
+save(model_metrics, log_reg_fit, enet_reg_fit, knn_fit, rf_fit, lda_fit, qda_fit, file = "data/Final_models.rda")
+```
